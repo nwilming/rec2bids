@@ -2,17 +2,15 @@
 Provide meta data for recording data.
 '''
 
-import re
-from scipy.io.matlab.miobase import MatReadError
-from scipy.io import loadmat
-import time
-from pyedfread import edfread
 import os
-from neo import Spike2IO
-from joblib import Memory
-import numpy as np
-import quantities as pq
+import re
+import time
 import tobids
+
+from joblib import Memory
+from pyedfread import edfread
+from scipy.io import loadmat
+from scipy.io.matlab.miobase import MatReadError
 
 memory = Memory(cachedir='/Users/nwilming/u/flexible_rule/cache', verbose=0)
 

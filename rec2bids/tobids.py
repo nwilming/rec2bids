@@ -64,32 +64,49 @@ class BIDSTemplate(object):
         E.g. 'bold' for fMRI, 'T1w' for anatomical T1 image.
     '''
 
-    def __init__(self, path, session=True, convert_dicom=None):
+    def __init__(self, path, session=True, convert_dicom=None, force_dicom=False):
+        '''
+        Create a new conversion template.
+
+        Parameters
+        ----------
+        path : str
+            Directory in which to search for files that need to be converted.
+        session : Bool, default True
+            True if recordings have multiple sessions per subject
+        convert_dicom : None (default) or str (path)
+            If not None convert dicom sets (folders that only contain dicom
+            images) to Nifti. Temporary niftis will be stored in the
+            path indicated by convert_dicom.
+        force_dicom : bool, default False
+            Force new conversion of dicom dirs even if path already exists.
+        '''
         self.path = path
         self.files = list(walk(path))
         print('Found %i files in %s' % (len(self.files), path))
 
         if convert_dicom:
-            ds = DicomSet(self.files, convert_dir=convert_dicom)
-            self.files = ds.convert()
-        depth = 5
+            self.ds = DicomSet(self.files, convert_dir=convert_dicom,
+                               force=force_dicom)
+            self.files = self.ds.convert()
+        depth = 6
         if session:
-            depth = 6
+            depth = 7
         self.mapping = ddict(depth)
         self.multi_file = []
 
-    def process(self, ident_func, sort_func, target):
+    def process(self, ident_func, sort_func, target, protect=False):
         self.identify(ident_func)
         self.sort(sort_func)
         self.generate_filenames()
-        self.move(target)
+        self.move(target, protect=protect)
 
     def identify(self, func):
         '''
         Walk through all filenames and identify subject,
         session, run and data type.
         '''
-        for file in self.files:
+        for file in tqdm(self.files):
             try:
 
                 files = func(file)
@@ -105,10 +122,10 @@ class BIDSTemplate(object):
     def add(self, file=None, subject=None, session=None,
             run=None, data_type=None, task=None, acq=None,
             file_format=None, modality=None):
-        if not subject.startswith('sub-'):
-            subject = 'sub-' + subject
-        if not session.startswith('sub-'):
-            session = 'ses-' + session
+        if not str(subject).startswith('sub-'):
+            subject = 'sub-' + str(subject)
+        if not str(session).startswith('ses-'):
+            session = 'ses-' + str(session)
         next_entry = {'source': file,
                       'params': {
                           'subject': subject,
@@ -121,14 +138,17 @@ class BIDSTemplate(object):
                           'modality': modality}
                       }
         if len(self.mapping[subject][session][run][
-               data_type][file_format]) > 0:
-            # Duplicate Entry
+               data_type][file_format][modality]) > 0:
+            # Prevent duplicates
+            if any([next_entry == entry for entry in self.mapping[subject][
+                    session][run][data_type][file_format][modality]]):
+                return
             self.mapping[subject][session][run][
-                data_type][file_format].append(next_entry)
+                data_type][file_format][modality].append(next_entry)
         else:
             new_list = [next_entry]
             self.mapping[subject][session][run][
-                data_type][file_format] = new_list
+                data_type][file_format][modality] = new_list
             self.multi_file.append(new_list)
 
     def sort(self, get_time):
@@ -177,14 +197,38 @@ class BIDSTemplate(object):
         filename += '.' + file_format
         return joinpath(path, filename)
 
-    def move(self, path):
+    def move(self, path, protect=False):
+        if not protect:
+            protect = []
         for mf in tqdm(self.multi_file):
             for m in mf:
                 source = m['source']
                 target = joinpath(path, m['target'])
-
+                if (os.path.exists(target) and any([source.endswith(p)
+                                                    for p in protect])):
+                    continue
                 makedirs(os.path.dirname(target), exist_ok=True)
                 copy(source, target)
+
+    def description(self, name, version='1.0.2', license=None,
+                    authors=None, acknowledgments=None, howtoack=None,
+                    funding=None, refsandlinks=None, doi=None):
+        names = ['Name', 'BIDSVersion', 'License', 'Authors',
+                 'Acknowledgments', 'HowToAcknowledge', 'Funding',
+                 'ReferencesAndLinks', 'DatasetDOI']
+        fields = [name, version, license, authors, acknowledgments, howtoack,
+                  funding, refsandlinks, doi]
+        with open('dataset_description.json', 'w') as outfile:
+            json.dump(
+                dict((name, field) for name, field in zip(
+                    names, fields) if field is not None),
+                outfile)
+
+
+def siemens_fmap_adapter(files):
+    '''
+    Identifies recordings for field map construction in file set.
+    '''
 
 
 class DicomSet(object):
@@ -193,7 +237,7 @@ class DicomSet(object):
     '''
 
     def __init__(self, filenames, convert_dir=None,
-                 check_dicom_dir=False):
+                 check_dicom_dir=False, force=False):
         '''
         Initialize with a list of filenames.
 
@@ -214,22 +258,26 @@ class DicomSet(object):
         for rm in rm_files:
             self.remaining_files -= set(rm)
         self.output_dir = convert_dir
+        self.force = force
 
     def convert(self):
         for dataset in tqdm(self.datasets):
-            dicom_convert(dataset, self.output_dir)
-        json = glob(join(self.output_dir, '*json'))
-        nifti = glob(join(self.output_dir, '*.nii'))
+            dicom_convert(dataset, self.output_dir, force=self.force)
+        json = glob(join(self.output_dir, '*/*json'))
+        nifti = glob(join(self.output_dir, '*/*.nii'))
         self.converted = json, nifti
-        self.filelist = self.original_filenames.union(
+        self.filelist = self.remaining_files.union(
             set(json)).union(set(nifti))
         return self.filelist
 
 
-@memory.cache
-def dicom_convert(dataset, output_dir):
-    makedirs(output_dir, exist_ok=True)
-    return call(["dcm2niix", "-9", "-b y", "-o", output_dir, dataset])
+def dicom_convert(dataset, output_dir, force=False):
+    output_dir = join(output_dir, os.path.basename(dataset))
+    if (not os.path.isdir(output_dir)) or force:
+        makedirs(output_dir, exist_ok=True)
+        return call(["dcm2niix", "-9", "-b y", "-o", output_dir, dataset])
+    else:
+        return 'cached'
 
 
 def is_dicom_dir(filename):
