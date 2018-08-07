@@ -55,11 +55,11 @@ The following sequence of operations is carried out for all files:
 
 
 A typical use case is:
-
-   >>> from rec2bids import tobids, identify
-   >>> r = tobids.BIDSTemplate(path)
-   >>> r.process(identify.identify_file, identify.get_acquition_time, target_path)
-
+```python
+ >>> from rec2bids import tobids, identify
+ >>> r = tobids.BIDSTemplate(path)
+ >>> r.process(identify.identify_file, identify.get_acquition_time, target_path)
+```
 
 The recommended way to use rec2bids is to pair it with a metadata 
 script for each experiment that is converted. This script should:
